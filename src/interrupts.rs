@@ -25,6 +25,7 @@ use super::tc1_ovf;
 )]
 #[cfg_attr(any(feature = "arduino-mega1280"), avr_device::interrupt(atmega1280))]
 #[cfg_attr(any(feature = "arduino-mega2560"), avr_device::interrupt(atmega2560))]
+#[cfg_attr(feature = "_library_build_check", avr_device::interrupt(atmega328p))]
 fn TIMER1_OVF() {
     tc1_ovf();
 }
@@ -52,6 +53,7 @@ fn TIMER1_OVF() {
 )]
 #[cfg_attr(any(feature = "arduino-mega1280"), avr_device::interrupt(atmega1280))]
 #[cfg_attr(any(feature = "arduino-mega2560"), avr_device::interrupt(atmega2560))]
+#[cfg_attr(feature = "_library_build_check", avr_device::interrupt(atmega328p))]
 fn TIMER1_COMPA() {
     tc1_compa();
 }

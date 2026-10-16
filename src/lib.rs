@@ -19,15 +19,14 @@ use crate::prescalar::PRESCALAR;
 
 pub static TICKS_ELAPSED: Mutex<Cell<u64>> = Mutex::new(Cell::new(0));
 
-#[cfg(not(feature = "hal-selected"))]
+#[cfg(not(any(feature = "hal-selected", feature = "_library_build_check")))]
 compile_error!("select the board via crate features please");
 /// embassy_time implementation for arduinos
 /// If no prescaling is configure 256 will be used.
 /// higher prescaling results in fewer interrupts,
 /// but lower time resolution.
-/// TODO: adjust tick-hz according to board specs.
 /// EMBASSY_TIME_QUEUE_SIZE controls the size of the queue, default is 4.
-///
+/// Set feature embassy-time-driver/tick-hz* if somewhat precise timing is needed.
 /// You must select your board as feature flag
 /// and you _must_ to initialize timer before using embassy_time
 /// ```rust
@@ -100,11 +99,12 @@ impl EmbassyTimeDriverArduino {
 impl Driver for EmbassyTimeDriverArduino {
     #[inline(always)]
     fn now(&self) -> u64 {
-        self.time_now()
+        self.time_now() * PRESCALAR
     }
 
     #[inline(never)]
     fn schedule_wake(&self, at: u64, waker: &Waker) {
+        let at = at.div_ceil(PRESCALAR);
         critical_section::with(|cs| {
             let mut queue = QUEUE.borrow_ref_mut(cs);
             if queue.schedule_wake(at, waker) {
