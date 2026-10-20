@@ -8,11 +8,11 @@ mod interrupts;
 mod prescalar;
 
 pub use arduino_hal as hal;
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::task::Waker;
 use critical_section::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time_driver::Driver;
-use embassy_time_queue_utils::queue_generic::ConstGenericQueue;
 use hal::pac::TC1;
 
 use crate::prescalar::PRESCALAR;
@@ -36,12 +36,37 @@ compile_error!("select the board via crate features please");
 pub struct EmbassyTimeDriverArduino {
     next_alarm: Mutex<Cell<u64>>,
 }
+use embassy_sync::priority_channel::Min;
+use embassy_sync::priority_channel::PriorityChannel;
+
+#[derive(Clone)]
+struct Task {
+    at: u64,
+    waker: Waker,
+}
+
+impl PartialEq for Task {
+    fn eq(&self, other: &Self) -> bool {
+        self.at == other.at && self.waker.will_wake(&other.waker)
+    }
+}
+impl Eq for Task {}
+impl PartialOrd for Task {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.at.cmp(&other.at))
+    }
+}
+impl Ord for Task {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.at.cmp(&other.at)
+    }
+}
 
 const QUEUE_SIZE: usize =
     usize::from_str_radix(option_env!("EMBASSY_TIME_QUEUE_SIZE").unwrap_or("8"), 10).unwrap_or(8);
 
-pub static QUEUE: Mutex<RefCell<ConstGenericQueue<QUEUE_SIZE>>> =
-    Mutex::new(RefCell::new(ConstGenericQueue::new()));
+const QUEUE: PriorityChannel<CriticalSectionRawMutex, Task, Min, QUEUE_SIZE> =
+    PriorityChannel::new();
 
 // ensure tc1 is indeed a ZST
 static_assertions::assert_eq_size!(TC1, ());
@@ -98,21 +123,46 @@ impl EmbassyTimeDriverArduino {
         tc1!().timsk1().write(|w| w.ocie1a().set_bit());
     }
 
-    fn set_alarm(&self, cs: critical_section::CriticalSection, at: u64) -> bool {
+    fn set_alarm(&self, cs: critical_section::CriticalSection, at: u64) {
         let now = self.time_now();
         if at <= now {
-            return false;
+            return;
         }
         self.next_alarm
             .borrow(cs)
             .update(|old| core::cmp::min(old, at));
         self.update_ocr1a(cs);
-        true
     }
-    fn scheduler(&self, cs: critical_section::CriticalSection) -> bool {
-        let mut queue = QUEUE.borrow_ref_mut(cs);
-        let next = queue.next_expiration(self.time_now());
-        self.set_alarm(cs, next)
+    fn scheduler(&self, cs: critical_section::CriticalSection) {
+        self.wake_all();
+        if let Ok(next) = QUEUE.try_peek() {
+            self.set_alarm(cs, next.at);
+        } else {
+            defmt::warn!("scheduler queue empty");
+        }
+    }
+
+    fn wake_one(&self) -> bool {
+        while let Ok(task) = QUEUE.try_peek() {
+            if task.at < self.time_now()
+                && QUEUE.try_receive().and_then(|t| Ok(t.waker.wake())).is_ok()
+            {
+                return true;
+            }
+        }
+        false
+    }
+    fn wake_all(&self) -> u8 {
+        let mut count = 0;
+        while let Ok(task) = QUEUE.try_peek() {
+            if task.at < self.time_now() {
+                match QUEUE.try_receive().and_then(|t| Ok(t.waker.wake())) {
+                    Ok(_) => count += 1,
+                    _ => (),
+                }
+            }
+        }
+        count
     }
 }
 impl Driver for EmbassyTimeDriverArduino {
@@ -124,16 +174,15 @@ impl Driver for EmbassyTimeDriverArduino {
     #[inline(never)]
     fn schedule_wake(&self, at: u64, waker: &Waker) {
         let at = at / PRESCALAR + 1;
-        critical_section::with(|cs| {
-            let mut queue = QUEUE.borrow_ref_mut(cs);
-            while queue.schedule_wake(at, waker) {
-                drop(queue);
-                if DRIVER.scheduler(cs) {
-                    break;
-                }
-                queue = QUEUE.borrow_ref_mut(cs);
+        while let Err(_) = QUEUE.try_send(Task {
+            at,
+            waker: waker.clone(),
+        }) {
+            if !self.wake_one() {
+                defmt::error!("timer queue full");
+                break;
             }
-        });
+        }
     }
 }
 
