@@ -25,7 +25,7 @@ compile_error!("select the board via crate features please");
 /// If no prescaling is configure 256 will be used.
 /// higher prescaling results in fewer interrupts,
 /// but lower time resolution.
-/// EMBASSY_TIME_QUEUE_SIZE controls the size of the queue, default is 4.
+/// EMBASSY_TIME_QUEUE_SIZE controls the size of the queue, default is 64.
 /// Set feature embassy-time-driver/tick-hz* if somewhat precise timing is needed.
 /// You must select your board as feature flag
 /// and you _must_ to initialize timer before using embassy_time
@@ -37,7 +37,7 @@ pub struct EmbassyTimeDriverArduino {
 }
 
 const QUEUE_SIZE: usize =
-    usize::from_str_radix(option_env!("EMBASSY_TIME_QUEUE_SIZE").unwrap_or("4"), 10).unwrap_or(4);
+    usize::from_str_radix(option_env!("EMBASSY_TIME_QUEUE_SIZE").unwrap_or("64"), 10).unwrap_or(64);
 
 pub static QUEUE: Mutex<RefCell<ConstGenericQueue<QUEUE_SIZE>>> =
     Mutex::new(RefCell::new(ConstGenericQueue::new()));
@@ -74,6 +74,8 @@ impl EmbassyTimeDriverArduino {
         let next_ovf = self.time_now().next_multiple_of(u16::MAX as u64);
         let next_alarm = self.next_alarm.borrow(cs).get();
         if next_alarm < next_ovf {
+            #[cfg(feature = "defmt")]
+            defmt::trace!("compa soon");
             tc1!().ocr1a().write(|w| w.set(next_alarm as u16));
         }
     }
@@ -105,13 +107,22 @@ impl Driver for EmbassyTimeDriverArduino {
     #[inline(never)]
     fn schedule_wake(&self, at: u64, waker: &Waker) {
         let at = at.div_ceil(PRESCALAR);
+        let mut resched = false;
         critical_section::with(|cs| {
             let mut queue = QUEUE.borrow_ref_mut(cs);
             if queue.schedule_wake(at, waker) {
-                drop(queue);
-                self.scheduler(cs);
+                #[cfg(feature = "defmt")]
+                defmt::trace!("woke task at {=u64}", at);
+                resched = true;
             }
         });
+        if resched {
+            critical_section::with(|cs| {
+                #[cfg(feature = "defmt")]
+                defmt::trace!("reschedule");
+                self.scheduler(cs);
+            });
+        }
     }
 }
 
