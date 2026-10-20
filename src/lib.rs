@@ -70,6 +70,7 @@ impl EmbassyTimeDriverArduino {
             ticks_elapsed.get()
         })
     }
+    /// update compA for next wake
     fn update_ocr1a(&self, cs: critical_section::CriticalSection) {
         let at = self.next_alarm.borrow(cs).get();
         let now = self.time_now();
@@ -80,14 +81,14 @@ impl EmbassyTimeDriverArduino {
         let next_alarm = at - now;
         let tcnt: u16 = tc1!().tcnt1().read().bits();
         let next_ovf = u16::MAX - tcnt;
-        if next_alarm < next_ovf as u64 {
-            #[cfg(feature = "defmt")]
-            defmt::trace!("compa soon");
-            tc1!().ocr1a().write(|w| w.set(tcnt + next_alarm as u16));
-            tc1!().timsk1().write(|w| w.ocie1a().set_bit());
-        } else {
+        if next_alarm > next_ovf as u64 {
             tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
+            return;
         }
+        #[cfg(feature = "defmt")]
+        defmt::trace!("alarm set");
+        tc1!().ocr1a().write(|w| w.set(tcnt + next_alarm as u16));
+        tc1!().timsk1().write(|w| w.ocie1a().set_bit());
     }
 
     fn set_alarm(&self, cs: critical_section::CriticalSection, at: u64) -> bool {
@@ -103,10 +104,8 @@ impl EmbassyTimeDriverArduino {
     }
     fn scheduler(&self, cs: critical_section::CriticalSection) {
         let mut queue = QUEUE.borrow_ref_mut(cs);
-        let mut next = queue.next_expiration(self.time_now());
-        while !self.set_alarm(cs, next) {
-            next = queue.next_expiration(self.time_now());
-        }
+        let next = queue.next_expiration(self.time_now());
+        self.set_alarm(cs, next);
     }
 }
 impl Driver for EmbassyTimeDriverArduino {
@@ -117,7 +116,7 @@ impl Driver for EmbassyTimeDriverArduino {
 
     #[inline(never)]
     fn schedule_wake(&self, at: u64, waker: &Waker) {
-        let at = at.div_ceil(PRESCALAR);
+        let at = at / PRESCALAR;
         let mut resched = false;
         critical_section::with(|cs| {
             let mut queue = QUEUE.borrow_ref_mut(cs);

@@ -9,6 +9,7 @@ pub const PRESCALAR: u64 = cfg_select! {
     feature = "prescalar1024" => 1024,
     _ => 256,
 };
+
 pub fn set_prescalar(reg: &mut tccr1b::W) -> &mut W<tccr1b::TCCR1B_SPEC> {
     cfg_select! {
         feature = "prescalar1" => reg.cs1().direct(),
