@@ -389,6 +389,7 @@ tick-hz-5_242_880_000 = ["embassy-time-driver/tick-hz-5_242_880_000"]
 # Configure the build for minimal size - AVRs have very little program memory
 [profile.dev]
 panic = "abort"
+codegen-units = 1
 lto = true
 opt-level = "s"
 

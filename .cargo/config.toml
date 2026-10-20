@@ -3,7 +3,7 @@ target = "avr-none"
 [target.'cfg(target_arch = "avr")']
 #runner = "ravedude"
 [alias]
-b = "build -F_library_build_check"
+b = "build -F_library_build_check -Fdefmt"
 [target.'cfg(not(featue = "hal-selected"))']
 rustflags = "-Ctarget-cpu=atmega328p"
 rustdocflags = "-Ctarget-cpu=atmega328p"
