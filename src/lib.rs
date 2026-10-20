@@ -87,8 +87,6 @@ impl EmbassyTimeDriverArduino {
         let tcnt: u16 = tc1!().tcnt1().read().bits();
         let next_ovf = u16::MAX - tcnt;
         if next_alarm >= next_ovf {
-            // ovf will hit first
-            tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
             return;
         }
         #[cfg(feature = "defmt")]
@@ -163,6 +161,7 @@ pub fn tc1_ovf() {
 #[inline(always)]
 pub fn tc1_compa() {
     critical_section::with(|cs| {
+        tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
         DRIVER.scheduler(cs);
     })
 }
