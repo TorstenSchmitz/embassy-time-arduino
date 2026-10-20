@@ -82,6 +82,7 @@ impl EmbassyTimeDriverArduino {
         let tcnt: u16 = tc1!().tcnt1().read().bits();
         let next_ovf = u16::MAX - tcnt;
         if next_alarm > next_ovf as u64 {
+            // ovf comes first, no sense waking up at compa
             tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
             return;
         }
@@ -155,6 +156,8 @@ pub fn init_system_time(tc: &mut TC1) {
 pub fn tc1_ovf() {
     critical_section::with(|cs| {
         TICKS_ELAPSED.borrow(cs).update(|x| x + u16::MAX as u64);
+        // clear ovf flag
+        tc1!().tifr1().write(|w| w.tov1().set_bit());
         DRIVER.scheduler(cs);
     })
 }
