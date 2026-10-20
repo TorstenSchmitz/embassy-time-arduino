@@ -17,7 +17,7 @@ use hal::pac::TC1;
 
 use crate::prescalar::PRESCALAR;
 
-pub static TICKS_ELAPSED: Mutex<Cell<u64>> = Mutex::new(Cell::new(0));
+pub static TICKS_LAST_OVF: Mutex<Cell<u64>> = Mutex::new(Cell::new(0));
 
 #[cfg(not(any(feature = "hal-selected", feature = "_library_build_check")))]
 compile_error!("select the board via crate features please");
@@ -61,13 +61,12 @@ impl EmbassyTimeDriverArduino {
     fn time_now(&self) -> u64 {
         let tcnt = tc1!().tcnt1().read().bits();
         critical_section::with(|cs| {
-            let ticks_elapsed = TICKS_ELAPSED.borrow(cs);
-            ticks_elapsed.update(|x| x + tcnt as u64);
+            let mut ticks_elapsed = TICKS_LAST_OVF.borrow(cs).get();
             // Overflow interrupt pending
             if tc1!().tifr1().read().tov1().bit() {
-                ticks_elapsed.update(|x| x + u16::MAX as u64);
+                ticks_elapsed += u16::MAX as u64;
             }
-            ticks_elapsed.get()
+            ticks_elapsed + tcnt as u64
         })
     }
     /// update compA for next wake
@@ -78,17 +77,17 @@ impl EmbassyTimeDriverArduino {
             core::hint::cold_path();
             return;
         };
-        let next_alarm = at - now;
+        let next_alarm = (at - now) as u16;
         let tcnt: u16 = tc1!().tcnt1().read().bits();
         let next_ovf = u16::MAX - tcnt;
-        if next_alarm > next_ovf as u64 {
+        if next_alarm >= next_ovf {
             // ovf will hit first
             tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
             return;
         }
         #[cfg(feature = "defmt")]
         defmt::trace!("alarm set");
-        tc1!().ocr1a().write(|w| w.set(tcnt + next_alarm as u16));
+        tc1!().ocr1a().write(|w| w.set(tcnt + next_alarm));
         tc1!().timsk1().write(|w| w.ocie1a().set_bit());
     }
 
@@ -133,7 +132,7 @@ static LAST_TICKS_ELAPSED: Mutex<Cell<u64>> = Mutex::new(Cell::new(0));
 
 pub fn init_system_time(tc: &mut TC1) {
     critical_section::with(|cs| {
-        TICKS_ELAPSED.borrow(cs).set(0);
+        TICKS_LAST_OVF.borrow(cs).set(0);
         LAST_TICKS_ELAPSED.borrow(cs).set(0);
         tc.tccr1b().write(prescalar::set_prescalar);
         tc.tccr1a().write(|w| w.com1a().disconnected());
@@ -147,7 +146,7 @@ pub fn init_system_time(tc: &mut TC1) {
 #[inline(always)]
 pub fn tc1_ovf() {
     critical_section::with(|cs| {
-        TICKS_ELAPSED.borrow(cs).update(|x| x + u16::MAX as u64);
+        TICKS_LAST_OVF.borrow(cs).update(|x| x + u16::MAX as u64);
         // clear ovf flag
         tc1!().tifr1().write(|w| w.tov1().set_bit());
         DRIVER.scheduler(cs);
