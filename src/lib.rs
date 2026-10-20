@@ -51,6 +51,9 @@ macro_rules! tc1 {
         unsafe { core::mem::MaybeUninit::<TC1>::uninit().assume_init() }
     };
 }
+
+const MIN_TICK_TO_INTTERUPT: u16 = 200;
+
 impl EmbassyTimeDriverArduino {
     const fn new() -> Self {
         Self {
@@ -83,7 +86,7 @@ impl EmbassyTimeDriverArduino {
             core::hint::cold_path();
             return;
         };
-        let next_alarm = (at - now) as u16;
+        let next_alarm = core::cmp::max((at - now) as u16, MIN_TICK_TO_INTTERUPT);
         let tcnt: u16 = tc1!().tcnt1().read().bits();
         let next_ovf = u16::MAX - tcnt;
         if next_alarm >= next_ovf {
