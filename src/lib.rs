@@ -60,10 +60,10 @@ impl EmbassyTimeDriverArduino {
 
     #[inline(never)]
     fn time_now(&self) -> u64 {
-        let tcnt = tc1!().tcnt1().read().bits();
         critical_section::with(|cs| {
             let last_ticks_elapsed = LAST_TICKS_ELAPSED.borrow(cs);
             let mut ticks_last_ovf = TICKS_LAST_OVF.borrow(cs).get();
+            let tcnt = tc1!().tcnt1().read().bits();
             // Overflow interrupt pending
             if tcnt < u16::MAX / 4 && tc1!().tifr1().read().tov1().bit() {
                 ticks_last_ovf += u16::MAX as u64;
@@ -151,6 +151,9 @@ pub fn init_system_time(tc: &mut TC1) {
 pub fn tc1_ovf() {
     critical_section::with(|cs| {
         TICKS_LAST_OVF.borrow(cs).update(|x| x + u16::MAX as u64);
+        LAST_TICKS_ELAPSED
+            .borrow(cs)
+            .update(|last| core::cmp::max(last, TICKS_LAST_OVF.borrow(cs).get()));
         // clear ovf flag
         tc1!().tifr1().write(|w| w.tov1().set_bit());
         DRIVER.scheduler(cs);
