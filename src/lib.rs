@@ -106,10 +106,10 @@ impl EmbassyTimeDriverArduino {
         self.update_ocr1a(cs);
         true
     }
-    fn scheduler(&self, cs: critical_section::CriticalSection) {
+    fn scheduler(&self, cs: critical_section::CriticalSection) -> bool {
         let mut queue = QUEUE.borrow_ref_mut(cs);
         let next = queue.next_expiration(self.time_now());
-        self.set_alarm(cs, next);
+        self.set_alarm(cs, next)
     }
 }
 impl Driver for EmbassyTimeDriverArduino {
@@ -120,12 +120,14 @@ impl Driver for EmbassyTimeDriverArduino {
 
     #[inline(never)]
     fn schedule_wake(&self, at: u64, waker: &Waker) {
-        let at = at / PRESCALAR;
+        let at = at / PRESCALAR + 1;
         critical_section::with(|cs| {
             let mut queue = QUEUE.borrow_ref_mut(cs);
             while queue.schedule_wake(at, waker) {
                 drop(queue);
-                DRIVER.scheduler(cs);
+                if DRIVER.scheduler(cs) {
+                    break;
+                }
                 queue = QUEUE.borrow_ref_mut(cs);
             }
         });
