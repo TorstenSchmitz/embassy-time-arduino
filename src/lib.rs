@@ -82,7 +82,7 @@ impl EmbassyTimeDriverArduino {
         let tcnt: u16 = tc1!().tcnt1().read().bits();
         let next_ovf = u16::MAX - tcnt;
         if next_alarm > next_ovf as u64 {
-            // ovf comes first, no sense waking up at compa
+            // ovf will hit first
             tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
             return;
         }
@@ -118,22 +118,14 @@ impl Driver for EmbassyTimeDriverArduino {
     #[inline(never)]
     fn schedule_wake(&self, at: u64, waker: &Waker) {
         let at = at / PRESCALAR;
-        let mut resched = false;
         critical_section::with(|cs| {
             let mut queue = QUEUE.borrow_ref_mut(cs);
-            if queue.schedule_wake(at, waker) {
-                #[cfg(feature = "defmt")]
-                defmt::trace!("woke task at {=u64}", at);
-                resched = true;
+            while queue.schedule_wake(at, waker) {
+                drop(queue);
+                DRIVER.scheduler(cs);
+                queue = QUEUE.borrow_ref_mut(cs);
             }
         });
-        if resched {
-            critical_section::with(|cs| {
-                #[cfg(feature = "defmt")]
-                defmt::trace!("reschedule");
-                self.scheduler(cs);
-            });
-        }
     }
 }
 
