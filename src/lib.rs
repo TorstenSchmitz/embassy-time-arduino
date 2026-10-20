@@ -77,6 +77,9 @@ impl EmbassyTimeDriverArduino {
             #[cfg(feature = "defmt")]
             defmt::trace!("compa soon");
             tc1!().ocr1a().write(|w| w.set(next_alarm as u16));
+            tc1!().timsk1().write(|w| w.ocie1a().set_bit());
+        } else {
+            tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
         }
     }
 
