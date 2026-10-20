@@ -9,6 +9,7 @@ mod prescalar;
 
 pub use arduino_hal as hal;
 use core::cell::Cell;
+use core::num::NonZeroU8;
 use core::task::Waker;
 use critical_section::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -79,6 +80,8 @@ macro_rules! tc1 {
 
 const MIN_TICK_TO_INTTERUPT: u16 = 200;
 
+struct MissedAlarms;
+
 impl EmbassyTimeDriverArduino {
     const fn new() -> Self {
         Self {
@@ -104,56 +107,56 @@ impl EmbassyTimeDriverArduino {
         })
     }
     /// update compA for next wake
-    fn update_ocr1a(&self, cs: critical_section::CriticalSection) {
+    fn update_ocr1a(&self, cs: critical_section::CriticalSection) -> Result<(), MissedAlarms> {
         let at = self.next_alarm.borrow(cs).get();
         let now = self.time_now();
         if at <= now {
             core::hint::cold_path();
-            return;
+            return Err(MissedAlarms);
         };
         let next_alarm = core::cmp::max((at - now) as u16, MIN_TICK_TO_INTTERUPT);
         let tcnt: u16 = tc1!().tcnt1().read().bits();
         let next_ovf = u16::MAX - tcnt;
         if next_alarm >= next_ovf {
-            return;
+            return Ok(());
         }
         #[cfg(feature = "defmt")]
         defmt::trace!("alarm set");
         tc1!().ocr1a().write(|w| w.set(tcnt + next_alarm));
         tc1!().timsk1().write(|w| w.ocie1a().set_bit());
+        Ok(())
     }
 
-    fn set_alarm(&self, cs: critical_section::CriticalSection, at: u64) {
-        let now = self.time_now();
-        if at <= now {
-            return;
-        }
-        self.next_alarm
-            .borrow(cs)
-            .update(|old| core::cmp::min(old, at));
-        self.update_ocr1a(cs);
-    }
-    fn scheduler(&self, cs: critical_section::CriticalSection) {
-        self.wake_all();
+    fn reschedule(&self, cs: critical_section::CriticalSection) -> Result<(), MissedAlarms> {
         if let Ok(next) = QUEUE.try_peek() {
-            self.set_alarm(cs, next.at);
-        } else {
-            defmt::warn!("scheduler queue empty");
+            let now = self.time_now();
+            if next.at <= now {
+                return Err(MissedAlarms);
+            }
+            self.next_alarm
+                .borrow(cs)
+                .update(|old| core::cmp::min(old, next.at));
+            self.update_ocr1a(cs)?;
         }
+        Ok(())
     }
 
-    fn wake_one(&self) -> bool {
+    // Wake at least one task if there is one
+    fn wake_some(&self) -> Option<NonZeroU8> {
         while let Ok(task) = QUEUE.try_peek() {
             if task.at < self.time_now()
                 && QUEUE.try_receive().and_then(|t| Ok(t.waker.wake())).is_ok()
             {
-                return true;
+                if let Ok(_) = critical_section::with(|cs| self.reschedule(cs)) {
+                    return NonZeroU8::new(1);
+                }
+                return Some(self.wake_all()?);
             }
         }
-        false
+        None
     }
-    fn wake_all(&self) -> u8 {
-        let mut count = 0;
+    fn wake_all(&self) -> Option<NonZeroU8> {
+        let mut count: u8 = 0;
         while let Ok(task) = QUEUE.try_peek() {
             if task.at < self.time_now() {
                 match QUEUE.try_receive().and_then(|t| Ok(t.waker.wake())) {
@@ -162,7 +165,9 @@ impl EmbassyTimeDriverArduino {
                 }
             }
         }
-        count
+        critical_section::with(|cs| self.reschedule(cs))
+            .ok()
+            .and(NonZeroU8::new(count))
     }
 }
 impl Driver for EmbassyTimeDriverArduino {
@@ -178,7 +183,7 @@ impl Driver for EmbassyTimeDriverArduino {
             at,
             waker: waker.clone(),
         }) {
-            if !self.wake_one() {
+            if self.wake_some().is_none() {
                 defmt::error!("timer queue full");
                 break;
             }
@@ -206,18 +211,16 @@ pub fn tc1_ovf() {
         LAST_TICKS_ELAPSED
             .borrow(cs)
             .update(|last| core::cmp::max(last, TICKS_LAST_OVF.borrow(cs).get()));
-        // clear ovf flag
-        tc1!().tifr1().write(|w| w.tov1().set_bit());
-        DRIVER.scheduler(cs);
-    })
+    });
+    // clear ovf flag
+    tc1!().tifr1().write(|w| w.tov1().set_bit());
+    DRIVER.wake_all();
 }
 
 #[inline(always)]
 pub fn tc1_compa() {
-    critical_section::with(|cs| {
-        tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
-        DRIVER.scheduler(cs);
-    })
+    tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
+    DRIVER.wake_some();
 }
 
 embassy_time_driver::time_driver_impl!(static DRIVER: EmbassyTimeDriverArduino = EmbassyTimeDriverArduino::new());
