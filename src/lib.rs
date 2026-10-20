@@ -71,12 +71,19 @@ impl EmbassyTimeDriverArduino {
         })
     }
     fn update_ocr1a(&self, cs: critical_section::CriticalSection) {
-        let next_ovf = self.time_now().next_multiple_of(u16::MAX as u64);
-        let next_alarm = self.next_alarm.borrow(cs).get();
-        if next_alarm < next_ovf {
+        let at = self.next_alarm.borrow(cs).get();
+        let now = self.time_now();
+        if at <= now {
+            core::hint::cold_path();
+            return;
+        };
+        let next_alarm = at - now;
+        let tcnt: u16 = tc1!().tcnt1().read().bits();
+        let next_ovf = u16::MAX - tcnt;
+        if next_alarm < next_ovf as u64 {
             #[cfg(feature = "defmt")]
             defmt::trace!("compa soon");
-            tc1!().ocr1a().write(|w| w.set(next_alarm as u16));
+            tc1!().ocr1a().write(|w| w.set(tcnt + next_alarm as u16));
             tc1!().timsk1().write(|w| w.ocie1a().set_bit());
         } else {
             tc1!().timsk1().write(|w| w.ocie1a().clear_bit());
@@ -84,7 +91,8 @@ impl EmbassyTimeDriverArduino {
     }
 
     fn set_alarm(&self, cs: critical_section::CriticalSection, at: u64) -> bool {
-        if self.now() >= at {
+        let now = self.time_now();
+        if at <= now {
             return false;
         }
         self.next_alarm
