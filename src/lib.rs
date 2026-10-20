@@ -142,7 +142,7 @@ impl EmbassyTimeDriverArduino {
     }
 
     // Wake at least one task if there is one
-    fn wake_some(&self) -> Option<NonZeroU8> {
+    pub fn wake_some(&self) -> Option<NonZeroU8> {
         while let Ok(task) = QUEUE.try_peek() {
             if task.at < self.time_now()
                 && QUEUE.try_receive().and_then(|t| Ok(t.waker.wake())).is_ok()
@@ -155,7 +155,7 @@ impl EmbassyTimeDriverArduino {
         }
         None
     }
-    fn wake_all(&self) -> Option<NonZeroU8> {
+    pub fn wake_all(&self) -> Option<NonZeroU8> {
         let mut count: u8 = 0;
         while let Ok(task) = QUEUE.try_peek() {
             if task.at < self.time_now() {
