@@ -18,6 +18,7 @@ use hal::pac::TC1;
 use crate::prescalar::PRESCALAR;
 
 pub static TICKS_LAST_OVF: Mutex<Cell<u64>> = Mutex::new(Cell::new(0));
+static LAST_TICKS_ELAPSED: Mutex<Cell<u64>> = Mutex::new(Cell::new(0));
 
 #[cfg(not(any(feature = "hal-selected", feature = "_library_build_check")))]
 compile_error!("select the board via crate features please");
@@ -61,12 +62,17 @@ impl EmbassyTimeDriverArduino {
     fn time_now(&self) -> u64 {
         let tcnt = tc1!().tcnt1().read().bits();
         critical_section::with(|cs| {
-            let mut ticks_elapsed = TICKS_LAST_OVF.borrow(cs).get();
+            let last_ticks_elapsed = LAST_TICKS_ELAPSED.borrow(cs);
+            let mut ticks_last_ovf = TICKS_LAST_OVF.borrow(cs).get();
             // Overflow interrupt pending
-            if tc1!().tifr1().read().tov1().bit() {
-                ticks_elapsed += u16::MAX as u64;
+            if tcnt < u16::MAX / 4 && tc1!().tifr1().read().tov1().bit() {
+                ticks_last_ovf += u16::MAX as u64;
             }
-            ticks_elapsed + tcnt as u64
+            if last_ticks_elapsed.get() > ticks_last_ovf + tcnt as u64 {
+                ticks_last_ovf += u16::MAX as u64;
+            }
+            last_ticks_elapsed.replace(ticks_last_ovf + tcnt as u64);
+            last_ticks_elapsed.get()
         })
     }
     /// update compA for next wake
@@ -127,8 +133,6 @@ impl Driver for EmbassyTimeDriverArduino {
         });
     }
 }
-
-static LAST_TICKS_ELAPSED: Mutex<Cell<u64>> = Mutex::new(Cell::new(0));
 
 pub fn init_system_time(tc: &mut TC1) {
     critical_section::with(|cs| {
